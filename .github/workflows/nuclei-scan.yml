@@ -4,19 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Target URL/host untuk di-scan (kosongkan untuk pakai domain dari asset-dashboard)"
+        description: "Target URL/host tunggal untuk di-scan (kosongkan untuk pakai domain dari asset-dashboard)"
         required: false
         default: ""
   schedule:
     - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus/ubah)
 
-jobs:
-  nuclei-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo (workflow ini)
-        uses: actions/checkout@v4
+env:
+  CHUNKS: 6   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
 
+jobs:
+  # ============================================================
+  # JOB 1: Ambil domain dari asset-dashboard, cek host hidup, split chunk
+  # ============================================================
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      chunk_count: ${{ steps.split.outputs.chunk_count }}
+    steps:
       - name: Checkout repo asset-dashboard (sumber data domain)
         uses: actions/checkout@v4
         with:
@@ -31,75 +36,166 @@ jobs:
 
       - name: Build targets.txt dari file JSON asset-dashboard
         run: |
-          mkdir -p results
           rm -f targets.txt
           touch targets.txt
-
           DOMAIN_DIR="asset-dashboard/data/history"
 
-          if [ -d "$DOMAIN_DIR" ]; then
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            echo "${{ github.event.inputs.target }}" > targets.txt
+          elif [ -d "$DOMAIN_DIR" ]; then
             for f in "$DOMAIN_DIR"/*.json; do
               [ -e "$f" ] || continue
-              echo "Membaca file: $f"
-              # File berisi array of object seperti:
-              # [{"type":"new_subdomain","host":"xxx.example.com","timestamp":"..."}]
-              # Ambil field .host langsung
               jq -r '.[]?.host // empty' "$f" >> targets.txt || true
             done
-          else
-            echo "Folder $DOMAIN_DIR tidak ditemukan!"
           fi
 
-          # Buang baris kosong & duplikat
           sed -i '/^$/d' targets.txt
           sort -u -o targets.txt targets.txt
-          echo "Jumlah target ditemukan: $(wc -l < targets.txt)"
-          cat targets.txt
+          echo "Total domain mentah: $(wc -l < targets.txt)"
+
+      - name: Install httpx (probe host hidup)
+        run: |
+          curl -sL https://github.com/projectdiscovery/httpx/releases/latest/download/httpx_$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest | grep tag_name | cut -d '"' -f4 | tr -d 'v')_linux_amd64.zip -o httpx.zip
+          unzip -o httpx.zip httpx
+          chmod +x httpx
+          sudo mv httpx /usr/local/bin/httpx
+
+      - name: Probing host yang hidup saja
+        run: |
+          # -silent: no banner, -mc: match status code apapun asal ada respons
+          # -threads tinggi karena ini cuma HTTP probe ringan, bukan full scan
+          httpx -l targets.txt -silent -threads 100 -timeout 5 -retries 1 -o alive.txt || true
+
+          if [ ! -s alive.txt ]; then
+            echo "Tidak ada host yang merespons, pakai daftar mentah sebagai fallback."
+            cp targets.txt alive.txt
+          fi
+          echo "Total host hidup: $(wc -l < alive.txt)"
+
+      - name: Split menjadi beberapa chunk untuk scan paralel
+        id: split
+        run: |
+          mkdir -p chunks
+          TOTAL=$(wc -l < alive.txt)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "0" > chunks/00
+            echo "chunk_count=1" >> "$GITHUB_OUTPUT"
+          else
+            split -n l/${{ env.CHUNKS }} -d alive.txt chunks/chunk_
+            COUNT=$(ls chunks | wc -l)
+            echo "chunk_count=$COUNT" >> "$GITHUB_OUTPUT"
+          fi
+          ls -la chunks
+
+      - name: Upload chunks sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: target-chunks
+          path: chunks/
+
+  # ============================================================
+  # JOB 2: Scan tiap chunk secara paralel (matrix)
+  # ============================================================
+  scan:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [0, 1, 2, 3, 4, 5]   # harus >= CHUNKS di atas, kelebihan index otomatis di-skip
+    steps:
+      - name: Download chunks
+        uses: actions/download-artifact@v4
+        with:
+          name: target-chunks
+          path: chunks
+
+      - name: Cek apakah chunk index ini ada
+        id: check
+        run: |
+          FILES=(chunks/chunk_*)
+          FILE="${FILES[${{ matrix.index }}]:-}"
+          if [ -z "$FILE" ] || [ ! -s "$FILE" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache Nuclei templates
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/cache@v4
+        with:
+          path: ~/nuclei-templates
+          key: nuclei-templates-${{ github.run_id }}
+          restore-keys: nuclei-templates-
 
       - name: Install Nuclei
+        if: steps.check.outputs.skip == 'false'
         run: |
           curl -sL https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep tag_name | cut -d '"' -f4 | tr -d 'v')_linux_amd64.zip -o nuclei.zip
           unzip -o nuclei.zip
           chmod +x nuclei
           sudo mv nuclei /usr/local/bin/nuclei
-          nuclei -version
+          nuclei -update-templates
 
-      - name: Update Nuclei templates
-        run: nuclei -update-templates
-
-      - name: Run Nuclei Scan
-        id: scan
+      - name: Run Nuclei Scan (chunk ${{ matrix.index }})
+        if: steps.check.outputs.skip == 'false'
         run: |
-          if [ -n "${{ github.event.inputs.target }}" ]; then
-            echo "${{ github.event.inputs.target }}" > target.txt
-            nuclei -l target.txt -o results/nuclei-result.txt -silent
-          else
-            if [ ! -s targets.txt ]; then
-              echo "targets.txt kosong, tidak ada domain untuk di-scan." > results/nuclei-result.txt
-              exit 0
-            fi
-            nuclei -l targets.txt -o results/nuclei-result.txt -silent
-          fi
+          mkdir -p results
+          nuclei -l "${{ steps.check.outputs.file }}" \
+            -severity low,medium,high,critical \
+            -c 50 \
+            -rl 150 \
+            -timeout 5 \
+            -retries 1 \
+            -bs 25 \
+            -silent \
+            -o results/result-${{ matrix.index }}.txt || true
 
-          # Pastikan file selalu ada walau tidak ada finding
-          if [ ! -f results/nuclei-result.txt ]; then
-            echo "Tidak ada temuan (no findings)." > results/nuclei-result.txt
-          fi
+          [ -f results/result-${{ matrix.index }}.txt ] || echo "Tidak ada temuan." > results/result-${{ matrix.index }}.txt
 
-      - name: Upload hasil sebagai artifact
+      - name: Upload hasil chunk
+        if: steps.check.outputs.skip == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: nuclei-result
-          path: results/nuclei-result.txt
+          name: result-${{ matrix.index }}
+          path: results/result-${{ matrix.index }}.txt
+
+  # ============================================================
+  # JOB 3: Gabung semua hasil & kirim ke Discord
+  # ============================================================
+  notify:
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download semua hasil chunk
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: all-results
+          merge-multiple: true
+
+      - name: Gabung jadi satu file txt
+        run: |
+          mkdir -p final
+          cat all-results/*.txt > final/nuclei-result.txt 2>/dev/null || echo "Tidak ada hasil." > final/nuclei-result.txt
+          echo "Total baris hasil akhir: $(wc -l < final/nuclei-result.txt)"
+
+      - name: Upload hasil final sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuclei-result-final
+          path: final/nuclei-result.txt
 
       - name: Kirim hasil ke Discord Webhook
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          FILE=results/nuclei-result.txt
+          FILE=final/nuclei-result.txt
           LINES=$(wc -l < "$FILE")
-          TARGET_COUNT=$(wc -l < targets.txt 2>/dev/null || echo 0)
 
-          curl -s -F "payload_json={\"content\": \"✅ **Nuclei Scan selesai**\\nTotal domain di-scan: ${TARGET_COUNT}\\nTotal baris hasil: ${LINES}\\nWorkflow: ${{ github.workflow }} | Run: ${{ github.run_id }}\"}" \
+          curl -s -F "payload_json={\"content\": \"✅ **Nuclei Scan selesai (paralel)**\\nTotal baris hasil: ${LINES}\\nWorkflow: ${{ github.workflow }} | Run: ${{ github.run_id }}\"}" \
                -F "file1=@${FILE}" \
                "$DISCORD_WEBHOOK"
