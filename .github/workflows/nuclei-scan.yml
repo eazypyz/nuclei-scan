@@ -4,16 +4,57 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Target URL/host untuk di-scan (kosongkan untuk pakai targets.txt)"
+        description: "Target URL/host untuk di-scan (kosongkan untuk pakai domain dari asset-dashboard)"
         required: false
         default: ""
+  schedule:
+    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus/ubah)
 
 jobs:
   nuclei-scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repo (workflow ini)
         uses: actions/checkout@v4
+
+      - name: Checkout repo asset-dashboard (sumber data domain)
+        uses: actions/checkout@v4
+        with:
+          repository: eazypyz/asset-dashboard
+          path: asset-dashboard
+          sparse-checkout: |
+            data/history
+          sparse-checkout-cone-mode: false
+
+      - name: Install jq
+        run: sudo apt-get update -y && sudo apt-get install -y jq
+
+      - name: Build targets.txt dari file JSON asset-dashboard
+        run: |
+          mkdir -p results
+          rm -f targets.txt
+          touch targets.txt
+
+          DOMAIN_DIR="asset-dashboard/data/history"
+
+          if [ -d "$DOMAIN_DIR" ]; then
+            for f in "$DOMAIN_DIR"/*.json; do
+              [ -e "$f" ] || continue
+              echo "Membaca file: $f"
+              # File berisi array of object seperti:
+              # [{"type":"new_subdomain","host":"xxx.example.com","timestamp":"..."}]
+              # Ambil field .host langsung
+              jq -r '.[]?.host // empty' "$f" >> targets.txt || true
+            done
+          else
+            echo "Folder $DOMAIN_DIR tidak ditemukan!"
+          fi
+
+          # Buang baris kosong & duplikat
+          sed -i '/^$/d' targets.txt
+          sort -u -o targets.txt targets.txt
+          echo "Jumlah target ditemukan: $(wc -l < targets.txt)"
+          cat targets.txt
 
       - name: Install Nuclei
         run: |
@@ -29,11 +70,14 @@ jobs:
       - name: Run Nuclei Scan
         id: scan
         run: |
-          mkdir -p results
           if [ -n "${{ github.event.inputs.target }}" ]; then
             echo "${{ github.event.inputs.target }}" > target.txt
             nuclei -l target.txt -o results/nuclei-result.txt -silent
           else
+            if [ ! -s targets.txt ]; then
+              echo "targets.txt kosong, tidak ada domain untuk di-scan." > results/nuclei-result.txt
+              exit 0
+            fi
             nuclei -l targets.txt -o results/nuclei-result.txt -silent
           fi
 
@@ -54,7 +98,8 @@ jobs:
         run: |
           FILE=results/nuclei-result.txt
           LINES=$(wc -l < "$FILE")
+          TARGET_COUNT=$(wc -l < targets.txt 2>/dev/null || echo 0)
 
-          curl -s -F "payload_json={\"content\": \"✅ **Nuclei Scan selesai**\\nTotal baris hasil: ${LINES}\\nWorkflow: ${{ github.workflow }} | Run: ${{ github.run_id }}\"}" \
+          curl -s -F "payload_json={\"content\": \"✅ **Nuclei Scan selesai**\\nTotal domain di-scan: ${TARGET_COUNT}\\nTotal baris hasil: ${LINES}\\nWorkflow: ${{ github.workflow }} | Run: ${{ github.run_id }}\"}" \
                -F "file1=@${FILE}" \
                "$DISCORD_WEBHOOK"
