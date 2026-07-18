@@ -1,2 +1,2 @@
-https://example.com
-https://sub.example.com
+https://vhc-app.swiggy.com/
+https://api-wealth.paytm.com/
