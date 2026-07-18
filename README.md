@@ -1,5 +1,29 @@
 # Nuclei Scan → Discord Webhook (GitHub Actions)
 
+## Optimasi kecepatan (penting untuk ribuan subdomain)
+
+Workflow sekarang dipecah jadi 3 job supaya tidak kena limit **6 jam max per job** di GitHub Actions:
+
+1. **`prepare`** — ambil domain dari asset-dashboard → **probing host hidup pakai `httpx`** (host yang mati/tidak respons langsung dibuang, biasanya motong 30-70% waktu) → split jadi beberapa chunk (`CHUNKS: 6` di bagian `env`, bisa dinaikkan sampai ~20)
+2. **`scan`** — tiap chunk di-scan **paralel** di runner terpisah (matrix strategy), dengan tuning:
+   - `-c 50` → concurrency (jumlah template/host diproses bersamaan)
+   - `-rl 150` → rate limit request/detik
+   - `-timeout 5 -retries 1` → jangan tunggu lama untuk host yang lambat/mati
+   - `-severity low,medium,high,critical` → sesuaikan/kurangi kalau mau lebih cepat lagi (misal cuma `high,critical`)
+   - Template nuclei di-cache supaya tidak download ulang tiap run
+3. **`notify`** — gabung semua hasil chunk jadi satu file `.txt`, lalu kirim ke Discord
+
+**Cara atur jumlah paralel:**
+- Ubah `CHUNKS: 6` di bagian `env:` sesuai kebutuhan
+- Ubah juga daftar `matrix.index: [0, 1, 2, 3, 4, 5]` di job `scan` — jumlah angkanya **harus sama atau lebih banyak** dari `CHUNKS` (index yang tidak dipakai otomatis di-skip)
+- Contoh: untuk 10 chunk paralel, set `CHUNKS: 10` dan `index: [0,1,2,3,4,5,6,7,8,9]`
+
+**Tips tambahan kalau masih lambat:**
+- Kurangi severity yang di-scan (misal hanya `high,critical`) untuk mengurangi jumlah template yang dijalankan
+- Gunakan `-tags` untuk fokus ke kategori tertentu (misal `-tags cve,exposure,misconfig`)
+- Pertimbangkan **self-hosted runner** (VPS sendiri) kalau butuh scan sangat besar tanpa batas 6 jam sama sekali
+- Jadwalkan scan bertahap (misal per 500 domain per hari) daripada semua sekaligus tiap hari
+
 ## Sumber target domain
 
 Workflow ini **otomatis mengambil daftar subdomain** dari repo:
@@ -16,12 +40,12 @@ Format file JSON di folder itu (contoh `target.json`, `subdomain.json`) berupa a
 ]
 ```
 
-Cara kerja workflow:
+Cara kerja workflow (job `prepare`):
 1. Repo `asset-dashboard` di-checkout (sparse checkout, hanya folder `data/history`)
 2. Semua file `*.json` di folder itu dibaca
 3. Field `.host` dari tiap object diambil dengan `jq -r '.[]?.host'`
-4. Semua host digabung jadi `targets.txt`, duplikat dihapus otomatis
-5. `targets.txt` dipakai sebagai daftar target scan nuclei (nuclei otomatis probe `http/https`)
+4. Semua host digabung, duplikat dihapus, lalu di-probe dengan `httpx` untuk cek mana yang hidup
+5. Host yang hidup dipecah jadi beberapa chunk, discan paralel di job `scan`, hasilnya digabung & dikirim ke Discord di job `notify`
 
 Kalau ternyata ada file JSON lain di folder tersebut dengan struktur berbeda (bukan array of object dengan key `host`), kasih tahu saya formatnya biar filter `jq`-nya disesuaikan.
 
