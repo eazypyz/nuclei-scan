@@ -1,0 +1,62 @@
+name: Nuclei Scan to Discord
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target URL/host untuk di-scan (kosongkan untuk pakai targets.txt)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus)
+
+jobs:
+  nuclei-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Nuclei
+        run: |
+          curl -sL https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep tag_name | cut -d '"' -f4 | tr -d 'v')_linux_amd64.zip -o nuclei.zip
+          unzip -o nuclei.zip
+          chmod +x nuclei
+          sudo mv nuclei /usr/local/bin/nuclei
+          nuclei -version
+
+      - name: Update Nuclei templates
+        run: nuclei -update-templates
+
+      - name: Run Nuclei Scan
+        id: scan
+        run: |
+          mkdir -p results
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            echo "${{ github.event.inputs.target }}" > target.txt
+            nuclei -l target.txt -o results/nuclei-result.txt -silent
+          else
+            nuclei -l targets.txt -o results/nuclei-result.txt -silent
+          fi
+
+          # Pastikan file selalu ada walau tidak ada finding
+          if [ ! -f results/nuclei-result.txt ]; then
+            echo "Tidak ada temuan (no findings)." > results/nuclei-result.txt
+          fi
+
+      - name: Upload hasil sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuclei-result
+          path: results/nuclei-result.txt
+
+      - name: Kirim hasil ke Discord Webhook
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          FILE=results/nuclei-result.txt
+          LINES=$(wc -l < "$FILE")
+
+          curl -s -F "payload_json={\"content\": \"✅ **Nuclei Scan selesai**\\nTotal baris hasil: ${LINES}\\nWorkflow: ${{ github.workflow }} | Run: ${{ github.run_id }}\"}" \
+               -F "file1=@${FILE}" \
+               "$DISCORD_WEBHOOK"
