@@ -7,8 +7,6 @@ on:
         description: "Target URL/host untuk di-scan (kosongkan untuk pakai targets.txt)"
         required: false
         default: ""
-  schedule:
-    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus)
 
 jobs:
   nuclei-scan:
