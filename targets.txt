@@ -1,2 +1,3 @@
-https://vhc-app.swiggy.com/
-https://api-wealth.paytm.com/
+https://goldengate.paytm.com/
+https://im-com-app.swiggy.com/
+https://dinersone-proxy.swiggy.com/
