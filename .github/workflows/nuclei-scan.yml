@@ -7,9 +7,7 @@ on:
         description: "Target URL/host tunggal untuk di-scan (kosongkan untuk pakai domain dari asset-dashboard)"
         required: false
         default: ""
-  schedule:
-    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus/ubah)
-
+        
 env:
   CHUNKS: 6   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
 
