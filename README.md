@@ -24,6 +24,26 @@ Workflow sekarang dipecah jadi 3 job supaya tidak kena limit **6 jam max per job
 - Pertimbangkan **self-hosted runner** (VPS sendiri) kalau butuh scan sangat besar tanpa batas 6 jam sama sekali
 - Jadwalkan scan bertahap (misal per 500 domain per hari) daripada semua sekaligus tiap hari
 
+## Memilih sumber target saat menjalankan workflow
+
+Sekarang saat run manual (workflow_dispatch), ada dropdown **`source`** dengan 3 pilihan:
+
+| Pilihan | Keterangan |
+|---|---|
+| `asset-dashboard` | Ambil host dari repo `eazypyz/asset-dashboard` → folder `data/history` (default) |
+| `targets_file` | Ambil dari file `targets.txt` yang ada di **root repo workflow ini sendiri** |
+| `single_target` | Scan 1 target saja, diisi manual di field `target` (contoh: `example.com`) |
+
+Cara pakai:
+1. Buka tab **Actions** → pilih workflow **Nuclei Scan to Discord** → **Run workflow**
+2. Pilih `source` sesuai kebutuhan:
+   - Kalau pilih `targets_file` → pastikan file `targets.txt` di root repo ini sudah diisi domain/URL yang mau di-scan (satu per baris)
+   - Kalau pilih `single_target` → isi field `target` dengan 1 domain/URL
+   - Kalau pilih `asset-dashboard` → tidak perlu isi apa-apa lagi, otomatis ambil dari `data/history`
+3. Klik **Run workflow**
+
+Catatan: jika workflow jalan otomatis lewat jadwal `cron` (bukan manual), sumbernya otomatis default ke `asset-dashboard`.
+
 ## Sumber target domain
 
 Workflow ini **otomatis mengambil daftar subdomain** dari repo:
