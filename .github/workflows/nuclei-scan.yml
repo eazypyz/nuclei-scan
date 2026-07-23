@@ -3,24 +3,41 @@ name: Nuclei Scan to Discord
 on:
   workflow_dispatch:
     inputs:
+      source:
+        description: "Sumber target"
+        type: choice
+        required: true
+        default: "asset-dashboard"
+        options:
+          - asset-dashboard
+          - targets_file
+          - single_target
       target:
-        description: "Target URL/host tunggal untuk di-scan (kosongkan untuk pakai domain dari asset-dashboard)"
+        description: "Diisi hanya jika source = single_target (contoh: example.com)"
         required: false
         default: ""
-        
+  schedule:
+    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus/ubah)
+
 env:
   CHUNKS: 6   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
 
 jobs:
   # ============================================================
-  # JOB 1: Ambil domain dari asset-dashboard, cek host hidup, split chunk
+  # JOB 1: Ambil target (asset-dashboard / targets.txt repo sendiri / single target), cek host hidup, split chunk
   # ============================================================
   prepare:
     runs-on: ubuntu-latest
     outputs:
       chunk_count: ${{ steps.split.outputs.chunk_count }}
     steps:
+      - name: Checkout repo ini (untuk baca targets.txt milik sendiri)
+        uses: actions/checkout@v4
+        with:
+          path: this-repo
+
       - name: Checkout repo asset-dashboard (sumber data domain)
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.source == 'asset-dashboard' || github.event.inputs.source == ''
         uses: actions/checkout@v4
         with:
           repository: eazypyz/asset-dashboard
@@ -32,24 +49,55 @@ jobs:
       - name: Install jq
         run: sudo apt-get update -y && sudo apt-get install -y jq
 
-      - name: Build targets.txt dari file JSON asset-dashboard
+      - name: Build targets.txt sesuai sumber yang dipilih
         run: |
           rm -f targets.txt
           touch targets.txt
-          DOMAIN_DIR="asset-dashboard/data/history"
 
-          if [ -n "${{ github.event.inputs.target }}" ]; then
-            echo "${{ github.event.inputs.target }}" > targets.txt
-          elif [ -d "$DOMAIN_DIR" ]; then
-            for f in "$DOMAIN_DIR"/*.json; do
-              [ -e "$f" ] || continue
-              jq -r '.[]?.host // empty' "$f" >> targets.txt || true
-            done
+          SOURCE="${{ github.event.inputs.source }}"
+          # Default ke asset-dashboard kalau trigger bukan manual (misal jadwal cron)
+          if [ -z "$SOURCE" ]; then
+            SOURCE="asset-dashboard"
           fi
+
+          echo "Sumber target dipilih: $SOURCE"
+
+          case "$SOURCE" in
+            single_target)
+              if [ -z "${{ github.event.inputs.target }}" ]; then
+                echo "ERROR: source=single_target tapi field 'target' kosong."
+                exit 1
+              fi
+              echo "${{ github.event.inputs.target }}" > targets.txt
+              ;;
+
+            targets_file)
+              if [ ! -f "this-repo/targets.txt" ]; then
+                echo "ERROR: File targets.txt tidak ditemukan di root repo ini."
+                exit 1
+              fi
+              cp this-repo/targets.txt targets.txt
+              ;;
+
+            asset-dashboard)
+              DOMAIN_DIR="asset-dashboard/data/history"
+              if [ -d "$DOMAIN_DIR" ]; then
+                for f in "$DOMAIN_DIR"/*.json; do
+                  [ -e "$f" ] || continue
+                  jq -r '.[]?.host // empty' "$f" >> targets.txt || true
+                done
+              else
+                echo "ERROR: Folder $DOMAIN_DIR tidak ditemukan."
+                exit 1
+              fi
+              ;;
+          esac
 
           sed -i '/^$/d' targets.txt
           sort -u -o targets.txt targets.txt
-          echo "Total domain mentah: $(wc -l < targets.txt)"
+          echo "Total target mentah: $(wc -l < targets.txt)"
+          cat targets.txt
+
 
       - name: Install httpx (probe host hidup)
         run: |
