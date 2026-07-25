@@ -18,7 +18,7 @@ on:
         default: ""
   
 env:
-  CHUNKS: 10   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
+  CHUNKS: 6   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
 
 jobs:
   # ============================================================
@@ -146,7 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # harus >= CHUNKS di atas, kelebihan index otomatis di-skip
+        index: [0, 1, 2, 3, 4, 5, 6]   # harus >= CHUNKS di atas, kelebihan index otomatis di-skip
     steps:
       - name: Download chunks
         uses: actions/download-artifact@v4
