@@ -188,7 +188,7 @@ jobs:
         run: |
           mkdir -p results
           nuclei -l "${{ steps.check.outputs.file }}" \
-            -tags http/exposures/ \
+            -severity low,medium,high,crtical \
             -c 50 \
             -rl 150 \
             -timeout 5 \
