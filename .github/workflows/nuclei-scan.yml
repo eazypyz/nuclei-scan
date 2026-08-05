@@ -16,7 +16,9 @@ on:
         description: "Diisi hanya jika source = single_target (contoh: example.com)"
         required: false
         default: ""
-  
+  schedule:
+    - cron: "0 2 * * *"   # jalan tiap hari jam 02:00 UTC (opsional, bisa dihapus/ubah)
+
 env:
   CHUNKS: 6   # jumlah runner paralel, sesuaikan (max 10-20 biasanya cukup untuk ribuan subdomain)
 
@@ -146,7 +148,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3, 4, 5, 6]   # harus >= CHUNKS di atas, kelebihan index otomatis di-skip
+        index: [0, 1, 2, 3, 4, 5]   # harus >= CHUNKS di atas, kelebihan index otomatis di-skip
     steps:
       - name: Download chunks
         uses: actions/download-artifact@v4
@@ -172,7 +174,8 @@ jobs:
         with:
           path: ~/nuclei-templates
           key: nuclei-templates-${{ github.run_id }}
-          restore-keys: nuclei-templates-
+          restore-keys: |
+            nuclei-templates-
 
       - name: Install Nuclei
         if: steps.check.outputs.skip == 'false'
@@ -181,7 +184,20 @@ jobs:
           unzip -o nuclei.zip
           chmod +x nuclei
           sudo mv nuclei /usr/local/bin/nuclei
-          nuclei -update-templates
+          nuclei -version
+
+      - name: Update & verifikasi Nuclei templates
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          nuclei -update-templates -silent
+          # Pastikan folder template benar-benar ada isinya, bukan cache kosong/rusak
+          COUNT=$(find ~/nuclei-templates -name "*.yaml" | wc -l)
+          echo "Jumlah file template ditemukan: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Template kosong, paksa download ulang..."
+            rm -rf ~/nuclei-templates
+            nuclei -update-templates -silent
+          fi
 
       - name: Run Nuclei Scan (chunk ${{ matrix.index }})
         if: steps.check.outputs.skip == 'false'
@@ -189,6 +205,7 @@ jobs:
           mkdir -p results
           nuclei -l "${{ steps.check.outputs.file }}" \
             -severity low,medium,high,critical \
+            -tags exposure \
             -c 50 \
             -rl 150 \
             -timeout 5 \
