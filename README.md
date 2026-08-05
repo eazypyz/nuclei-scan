@@ -1,5 +1,32 @@
 # Nuclei Scan → Discord Webhook (GitHub Actions)
 
+## Cara pakai `-tags` yang benar (penting!)
+
+Kalau muncul error semacam "template not found" saat pakai `-tags`, biasanya ini penyebabnya:
+
+- **`-tags`** itu filter berdasarkan **tag metadata** di dalam file template, **bukan path folder**. Format: dipisah **koma**, bukan slash.
+  ```bash
+  # BENAR
+  -tags exposure
+  -tags exposure,cve,misconfig
+
+  # SALAH — "http/exposures" dibaca sebagai satu tag literal, tidak ada tag seperti itu
+  -tags http/exposures
+  ```
+
+- Kalau maksudnya scan berdasarkan **folder/path** template (misal folder `http/exposures/` di `nuclei-templates`), gunakan flag **`-t`**, bukan `-tags`:
+  ```bash
+  -t http/exposures/
+  ```
+
+- Nuclei **tidak membawa template bawaan** — wajib `nuclei -update-templates` dulu sebelum bisa dipakai. Di workflow ini sudah otomatis dijalankan di step **"Update & verifikasi Nuclei templates"**, termasuk pengecekan: kalau cache template kosong/rusak, otomatis download ulang.
+
+- Di workflow saat ini, tag yang dipakai untuk scan default adalah:
+  ```bash
+  -tags exposure
+  ```
+  Bisa diganti di file `.github/workflows/nuclei-scan.yml`, cari baris `-tags exposure` pada step **"Run Nuclei Scan"**, ganti sesuai kebutuhan (contoh: `-tags cve,exposure,misconfig`).
+
 ## Optimasi kecepatan (penting untuk ribuan subdomain)
 
 Workflow sekarang dipecah jadi 3 job supaya tidak kena limit **6 jam max per job** di GitHub Actions:
