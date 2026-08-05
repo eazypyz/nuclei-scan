@@ -204,7 +204,6 @@ jobs:
         run: |
           mkdir -p results
           nuclei -l "${{ steps.check.outputs.file }}" \
-            -severity low,medium,high,critical \
             -tags exposure \
             -c 50 \
             -rl 150 \
